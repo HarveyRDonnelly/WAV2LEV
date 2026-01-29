@@ -1,0 +1,1 @@
+from scripts.precompute_embeddings import precompute_embeddings
