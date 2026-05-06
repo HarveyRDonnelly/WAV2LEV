@@ -136,10 +136,12 @@ Replace `<timestamp>` with the run timestamp printed during training (or use `_r
 If you use WAV2LEV or Mini-CNoiSY in your work, please cite:
 
 ```bibtex
-@inproceedings{donnelly2026wav2lev,
-  title     = {{WAV2LEV}: Token-Level {L}evenshtein Edit Prediction for Reference-Free {ASR} Quality Estimation},
-  author    = {Donnelly, Harvey},
-  booktitle = {Proceedings of the IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)},
-  year      = {2026}
+@INPROCEEDINGS{11462338,
+  author={Donnelly, Harvey and Shi, Ken and Penn, Gerald},
+  booktitle={ICASSP 2026 - 2026 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)},
+  title={WAV2LEV: Predicting Levenshtein Edit Operation Sequences For Fine-Grained Estimation of Automatic Speech Recognition Error},
+  year={2026},
+  pages={15022-15026},
+  doi={10.1109/ICASSP55912.2026.11462338}
 }
 ```
