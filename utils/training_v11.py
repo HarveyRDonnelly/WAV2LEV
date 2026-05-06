@@ -22,18 +22,20 @@ def train(model,
           run,
           num_val_per_epoch=1,
           gradient_accumulation_steps=2,
-          max_grad_norm=1.0):
+          max_grad_norm=1.0,
+          label_smoothing=0.05,
+          warmup_ratio=0.01):
     start_epoch = 0
     global_step = 0
     best_val_rmse = float('inf')
     steps_per_epoch = len(train_loader)
     total_updates = steps_per_epoch * num_epochs // max(1, gradient_accumulation_steps)
-    warmup_steps = int(0.01 * max(1, total_updates))
-    
+    warmup_steps = int(warmup_ratio * max(1, total_updates))
+
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
         num_warmup_steps=warmup_steps,
-        num_training_steps=max(1, total_updates)
+        num_training_steps=max(1, total_updates),
     )
     val_interval = max(1, steps_per_epoch // max(1, num_val_per_epoch))
 
@@ -43,10 +45,10 @@ def train(model,
         model.train()
         train_loss_accum = 0.0
         progress = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}")
-        
+
         for batch_idx, batch in enumerate(progress):
             audio_emb, text_emb, feats, _, target_edit_ops, target_lengths, _, _, _ = batch
-            
+
             audio_emb = audio_emb.to(device, non_blocking=True)
             text_emb = text_emb.to(device, non_blocking=True)
             feats = feats.to(device, non_blocking=True)
@@ -65,7 +67,7 @@ def train(model,
                     audio_emb=audio_emb,
                     text_emb=text_emb,
                     feats=feats,
-                    target_edit_ops=te
+                    target_edit_ops=te,
                 )
 
                 Bm, Tm1, V = logits.size()
@@ -81,14 +83,14 @@ def train(model,
                     logits_flat,
                     targets_flat,
                     reduction='none',
-                    label_smoothing=0.05,
-                    ignore_index=ignore_id
+                    label_smoothing=label_smoothing,
+                    ignore_index=ignore_id,
                 )
                 loss = (loss_all[valid_mask_flat]).mean() / max(1, gradient_accumulation_steps)
 
             scaler.scale(loss).backward()
             do_update = ((batch_idx + 1) % gradient_accumulation_steps == 0) or ((batch_idx + 1) == len(train_loader))
-            
+
             if do_update:
                 scaler.unscale_(optimizer)
                 if max_grad_norm and max_grad_norm > 0:
@@ -101,14 +103,14 @@ def train(model,
                 run.log({
                     "Loss/Training": loss.item() * max(1, gradient_accumulation_steps),
                     "LR/Training": float(scheduler.get_last_lr()[0]),
-                    "Epoch": epoch
+                    "Epoch": epoch,
                 }, global_step)
 
             train_loss_accum += loss.item() * max(1, gradient_accumulation_steps)
             progress.set_postfix({
                 "loss": f"{loss.item() * max(1, gradient_accumulation_steps):.4f}",
                 "root_loss": f"{math.sqrt(max(loss.item() * max(1, gradient_accumulation_steps), 0.0)):.4f}",
-                "lr": f"{scheduler.get_last_lr()[0]:.6f}"
+                "lr": f"{scheduler.get_last_lr()[0]:.6f}",
             })
             del loss
 
@@ -143,5 +145,5 @@ def train(model,
         'val_pearson_history': [],
         'best_val_rmse': best_val_rmse,
         'final_val_rmse': val_rmse if 'val_rmse' in locals() else best_val_rmse,
-        'final_val_pearson': val_pearson if 'val_pearson' in locals() else 0.0
+        'final_val_pearson': val_pearson if 'val_pearson' in locals() else 0.0,
     }

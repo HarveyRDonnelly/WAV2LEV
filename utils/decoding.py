@@ -11,6 +11,7 @@ def init_vocab():
     return char2idx, idx2char, blank_token_id
 
 def init_transformer_vocab():
+    """Return (op2idx, idx2op, pad_token_id) for the LevTransformer edit vocabulary."""
     op2idx = {'<start>': 0, 'ins': 1, 'sub': 2, 'del': 3, 'match': 4, '<end>': 5, '<pad>': 6}
     idx2op = {v: k for k, v in op2idx.items()}
     pad_token_id = op2idx['<pad>']
@@ -18,6 +19,7 @@ def init_transformer_vocab():
 
 
 def calculate_complete_lev_wer(sequence):
+    """Compute WER from a flat list of Levenshtein edit operations."""
     if not sequence:
         return 0.0
     total_ops = len([op for op in sequence if op in ['match', 'sub', 'ins', 'del']])
@@ -32,7 +34,7 @@ def beam_search_decode(log_probs,
                        blank_token_id,
                        beam_width=5,
                        max_sym_exp=10):
-    
+    """CTC beam search decoder (used by CTC-based baselines, not LevTransformer)."""
     B, T, V = log_probs.size()
     device = log_probs.device
     results = []
@@ -74,5 +76,5 @@ def beam_search_decode(log_probs,
                 collapsed.append(sym)
         ops = [idx2char[i] for i in collapsed]
         results.append(ops)
-        
+
     return results

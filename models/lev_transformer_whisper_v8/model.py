@@ -2,35 +2,29 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# 4, 4
-# 4, 6
-# 8, 8
 
 class LevTransformer(nn.Module):
-    # def __init__(
-    #     self,
-    #     hidden_size=512*2,
-    #     num_decoder_layers=16,
-    #     num_heads=16,
-    #     max_edit_length=300,
-    #     beam_width=2
-    # ):
+    """Transformer decoder that predicts token-level Levenshtein edit operations.
+
+    Receives three concatenated memory streams from Whisper large-v3:
+      1. audio_emb  — encoder hidden states (frame-level acoustic features)
+      2. text_emb   — token embeddings of the hypothesis transcript
+      3. feats      — per-token uncertainty features computed from output logits
+
+    At inference the model autoregressively decodes an edit sequence
+    [<start>, op1, op2, ..., <end>] where each op ∈ {ins, sub, del, match}.
+    WER is derived from the predicted sequence by counting error operations.
+    """
+
     def __init__(
         self,
-        hidden_size=512*2,
+        hidden_size=1024,
         num_decoder_layers=12,
         num_heads=16,
         max_edit_length=300,
-        beam_width=2
+        dropout=0.1,
+        beam_width=2,
     ):
-    # def __init__(
-    #     self,
-    #     hidden_size=512,
-    #     num_decoder_layers=8,
-    #     num_heads=8,
-    #     max_edit_length=300,
-    #     beam_width=2
-    # ):
         super().__init__()
         self.edit_vocab = ['<start>', 'ins', 'sub', 'del', 'match', '<end>', '<pad>']
         self.vocab_size = len(self.edit_vocab)
@@ -40,61 +34,57 @@ class LevTransformer(nn.Module):
         self.max_edit_length = max_edit_length
         self.beam_width = beam_width
 
-        whisper_hidden_size = 1280
+        whisper_hidden_size = 1280  # Whisper large-v3 encoder/decoder dimensionality
         self.text_embed_dim = 1280
-        
+        self.feat_dim = 13  # number of per-token uncertainty features (see precompute_embeddings.py)
+
         self.audio_proj = nn.Linear(whisper_hidden_size, hidden_size)
         self.text_proj = nn.Linear(self.text_embed_dim, hidden_size)
-        
-        self.feat_dim = 13
         self.feat_proj = nn.Linear(self.feat_dim, hidden_size)
-        
+
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=hidden_size,
             nhead=num_heads,
             dim_feedforward=hidden_size * 4,
-            dropout=0.1,
+            dropout=dropout,
             batch_first=True,
-            activation='gelu'
+            activation='gelu',
         )
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_decoder_layers)
-        
+
         self.edit_embedding = nn.Embedding(self.vocab_size, hidden_size)
         self.pos_embedding = nn.Embedding(self.max_edit_length, hidden_size)
         self.output_proj = nn.Linear(hidden_size, self.vocab_size)
         self.layer_norm = nn.LayerNorm(hidden_size)
-        
+
         self._reset_parameters()
 
     def _reset_parameters(self):
-        nn.init.xavier_uniform_(self.audio_proj.weight)
-        if self.audio_proj.bias is not None:
-            nn.init.zeros_(self.audio_proj.bias)
-        nn.init.xavier_uniform_(self.text_proj.weight)
-        if self.text_proj.bias is not None:
-            nn.init.zeros_(self.text_proj.bias)
-        nn.init.xavier_uniform_(self.feat_proj.weight)
-        if self.feat_proj.bias is not None:
-            nn.init.zeros_(self.feat_proj.bias)
-        nn.init.xavier_uniform_(self.output_proj.weight)
-        if self.output_proj.bias is not None:
-            nn.init.zeros_(self.output_proj.bias)
+        """Xavier initialisation for projections; small normal for embeddings."""
+        for proj in (self.audio_proj, self.text_proj, self.feat_proj, self.output_proj):
+            nn.init.xavier_uniform_(proj.weight)
+            if proj.bias is not None:
+                nn.init.zeros_(proj.bias)
         nn.init.normal_(self.edit_embedding.weight, mean=0, std=0.02)
         nn.init.normal_(self.pos_embedding.weight, mean=0, std=0.02)
 
     def generate_causal_mask(self, size):
-        return torch.triu(torch.ones(size, size, device=self.output_proj.weight.device) * float('-inf'), diagonal=1)
+        """Upper-triangular mask that prevents each position attending to future positions."""
+        return torch.triu(
+            torch.ones(size, size, device=self.output_proj.weight.device) * float('-inf'),
+            diagonal=1,
+        )
 
     def forward_training(self, memory_states, target_sequences):
         targets = torch.clamp(target_sequences, 0, self.vocab_size - 1)
         B, T_full = targets.size()
-        decoder_inputs = targets[:, :-1]
-        targets_out = targets[:, 1:]
+        decoder_inputs = targets[:, :-1]   # teacher-forced inputs
+        targets_out = targets[:, 1:]       # shifted targets for cross-entropy
 
         embedded = self.edit_embedding(decoder_inputs)
         T = embedded.size(1)
-        pos_idx = torch.arange(T, device=embedded.device)
-        pos_idx = torch.clamp(pos_idx, max=self.max_edit_length - 1)
+        # Clamp positions to embedding table size in case sequences exceed max_edit_length
+        pos_idx = torch.arange(T, device=embedded.device).clamp(max=self.max_edit_length - 1)
         positions = pos_idx.unsqueeze(0).expand(B, -1)
         embedded = self.layer_norm(embedded + self.pos_embedding(positions))
 
@@ -105,7 +95,7 @@ class LevTransformer(nn.Module):
             tgt=embedded,
             memory=memory_states,
             tgt_mask=tgt_mask,
-            tgt_key_padding_mask=tgt_key_padding_mask
+            tgt_key_padding_mask=tgt_key_padding_mask,
         )
         logits = self.output_proj(decoded)
         return logits, targets_out
@@ -113,9 +103,8 @@ class LevTransformer(nn.Module):
     def beam_search_decode(self, encoder_states, beam_width=None, max_len=None, min_len=2, len_alpha=0.7, return_logits=False):
         B = encoder_states.size(0)
         beam_width = beam_width or self.beam_width
-        
         max_len = max_len or self.max_edit_length
-        
+
         sequences = [[(torch.tensor([self.start_token_id], device=encoder_states.device, dtype=torch.long), 0.0)] for _ in range(B)]
         finished = [[] for _ in range(B)]
 
@@ -127,20 +116,19 @@ class LevTransformer(nn.Module):
                     if seq[-1].item() == self.end_token_id and t > 1:
                         finished[b].append((seq, score))
                         continue
-                    
+
                     if seq.size(0) >= max_len:
                         end_seq = torch.cat([seq, torch.tensor([self.end_token_id], device=seq.device, dtype=seq.dtype)], dim=0)
                         finished[b].append((end_seq, score))
                         continue
-                    
+
                     emb = self.edit_embedding(seq.unsqueeze(0))
                     T = emb.size(1)
-                    pos_idx = torch.arange(T, device=emb.device)
-                    pos_idx = torch.clamp(pos_idx, max=self.max_edit_length - 1)
+                    pos_idx = torch.arange(T, device=emb.device).clamp(max=self.max_edit_length - 1)
                     positions = pos_idx.unsqueeze(0)
                     emb = self.layer_norm(emb + self.pos_embedding(positions))
                     tgt_mask = self.generate_causal_mask(T).to(encoder_states.device)
-                    
+
                     try:
                         dec = self.decoder(tgt=emb, memory=encoder_states[b:b+1], tgt_mask=tgt_mask)
                         logits = self.output_proj(dec[:, -1, :])
@@ -156,7 +144,7 @@ class LevTransformer(nn.Module):
                         end_seq = torch.cat([seq, torch.tensor([self.end_token_id], device=seq.device, dtype=seq.dtype)], dim=0)
                         finished[b].append((end_seq, score))
                         continue
-                
+
                 if not candidates and finished[b]:
                     new_sequences.append(sorted(finished[b], key=lambda x: x[1], reverse=True)[:beam_width])
                     continue
@@ -164,10 +152,10 @@ class LevTransformer(nn.Module):
                     seq = torch.tensor([self.start_token_id, self.end_token_id], device=encoder_states.device, dtype=torch.long)
                     new_sequences.append([(seq, 0.0)])
                     continue
-                
+
                 ordered = sorted(candidates, key=lambda x: x[-1], reverse=True)
                 new_sequences.append(ordered[:beam_width])
-            
+
             sequences = new_sequences
 
             for b in range(B):
@@ -175,6 +163,7 @@ class LevTransformer(nn.Module):
                 for seq, score in sequences[b]:
                     if seq[-1].item() == self.end_token_id and seq.size(0) >= min_len:
                         L = seq.size(0)
+                        # Length normalisation following Wu et al. (2016)
                         norm_score = score / ((5 + L) ** len_alpha / (5 + 1) ** len_alpha)
                         finished[b].append((seq, norm_score))
                     else:
@@ -208,8 +197,7 @@ class LevTransformer(nn.Module):
             seq = out_ids[b:b+1]
             emb = self.edit_embedding(seq)
             T = emb.size(1)
-            pos_idx = torch.arange(T, device=emb.device)
-            pos_idx = torch.clamp(pos_idx, max=self.max_edit_length - 1)
+            pos_idx = torch.arange(T, device=emb.device).clamp(max=self.max_edit_length - 1)
             positions = pos_idx.unsqueeze(0)
             emb = self.layer_norm(emb + self.pos_embedding(positions))
             tgt_mask = self.generate_causal_mask(T).to(encoder_states.device)
@@ -223,7 +211,8 @@ class LevTransformer(nn.Module):
         audio_states = self.audio_proj(audio_emb)
         feat_states = self.feat_proj(feats)
         text_states = self.text_proj(text_emb)
-        
+
+        # Concatenate all three streams along the sequence dimension to form the memory
         memory_states = torch.cat([audio_states, text_states, feat_states], dim=1)
 
         if self.training and target_edit_ops is not None:

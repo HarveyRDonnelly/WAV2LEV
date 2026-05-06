@@ -21,7 +21,8 @@ def train(model,
           run,
           num_val_per_epoch=1,
           gradient_accumulation_steps=2,
-          max_grad_norm=1.0):
+          max_grad_norm=1.0,
+          warmup_ratio=0.01):
 
     start_epoch = 0
     global_step = 0
@@ -29,11 +30,11 @@ def train(model,
 
     steps_per_epoch = len(train_loader)
     total_updates = steps_per_epoch * num_epochs // max(1, gradient_accumulation_steps)
-    warmup_steps = int(0.01 * max(1, total_updates))
+    warmup_steps = int(warmup_ratio * max(1, total_updates))
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
         num_warmup_steps=warmup_steps,
-        num_training_steps=max(1, total_updates)
+        num_training_steps=max(1, total_updates),
     )
 
     criterion = torch.nn.MSELoss(reduction='mean')
@@ -64,7 +65,7 @@ def train(model,
                     hypothesis_inputs=hypothesis_inputs,
                     audio_lengths=audio_lengths,
                     real_wers=real_wers,
-                    raw_texts=asr_texts if hypothesis_inputs is None else None
+                    raw_texts=asr_texts if hypothesis_inputs is None else None,
                 )
                 loss = criterion(pred_wer, real_wers) / max(1, gradient_accumulation_steps)
 
@@ -84,27 +85,18 @@ def train(model,
                 run.log({
                     "Loss/Training": loss.item() * max(1, gradient_accumulation_steps),
                     "LR/Training": float(scheduler.get_last_lr()[0]),
-                    "Epoch": epoch
+                    "Epoch": epoch,
                 }, global_step)
 
             train_loss_accum += loss.item() * max(1, gradient_accumulation_steps)
             progress.set_postfix({
                 "loss": f"{loss.item() * max(1, gradient_accumulation_steps):.4f}",
                 "root_loss": f"{math.sqrt(max(loss.item() * max(1, gradient_accumulation_steps), 0.0)):.4f}",
-                "lr": f"{scheduler.get_last_lr()[0]:.6f}"
+                "lr": f"{scheduler.get_last_lr()[0]:.6f}",
             })
 
             del loss
             torch.cuda.empty_cache()
-
-            # if num_val_per_epoch > 0 and (batch_idx + 1) % val_interval == 0 and (batch_idx + 1) < len(train_loader):
-            #     with torch.inference_mode():
-            #         with torch.amp.autocast(device_type='cuda', enabled=True):
-            #             val_rmse, val_pearson = validate(model, val_loader, device, idx2char, -1, log, run, global_step)
-            #     if val_rmse < best_val_rmse:
-            #         best_val_rmse = val_rmse
-            #         torch.save(model.state_dict(), f"{c.WEIGHTS_PATH}/{run.name}_best.pt")
-            #     model.train()
 
         avg_train_loss = train_loss_accum / max(1, len(train_loader))
         progress.clear()
@@ -130,5 +122,5 @@ def train(model,
         'val_pearson_history': [],
         'best_val_rmse': best_val_rmse,
         'final_val_rmse': val_rmse if 'val_rmse' in locals() else best_val_rmse,
-        'final_val_pearson': val_pearson if 'val_pearson' in locals() else 0.0
+        'final_val_pearson': val_pearson if 'val_pearson' in locals() else 0.0,
     }

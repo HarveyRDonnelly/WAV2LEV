@@ -15,6 +15,23 @@ c = Config()
 
 
 def compute_uncertainty_features(logits, input_ids):
+    """Compute 13 per-token uncertainty features from Whisper decoder output logits.
+
+    Features (in order):
+      p1           — top-1 token probability
+      p2           — top-2 token probability
+      margin       — p1 - p2
+      ratio        — p2 / (p1 + ε)
+      norm_entropy — Shannon entropy normalised by log(vocab_size)
+      gini         — Gini impurity: 1 - Σp²
+      hhi          — Herfindahl–Hirschman index: Σp² (concentration measure)
+      top3         — cumulative probability mass of top-3 tokens
+      top5         — cumulative probability mass of top-5 tokens
+      top10        — cumulative probability mass of top-10 tokens
+      neff         — normalised effective vocabulary: exp(H) / V
+      tgt_prob     — probability assigned to the hypothesis token
+      nll          — negative log-likelihood of the hypothesis token
+    """
     with torch.no_grad():
         probs = F.softmax(logits, dim=-1)
         V = probs.size(-1)
@@ -54,6 +71,11 @@ def compute_uncertainty_features(logits, input_ids):
 
 
 def _resume_state(save_dir):
+    """Return the set of already-processed fg_ids, deleting the last written file.
+
+    The last file is removed because it may have been partially written if the
+    previous run was interrupted mid-save (before os.replace completed).
+    """
     os.makedirs(save_dir, exist_ok=True)
 
     for fn in os.listdir(save_dir):
@@ -81,7 +103,7 @@ def _resume_state(save_dir):
 
 def precompute_embeddings():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model_name = "openai/whisper-large-v3"
+    model_name = c.WHISPER_MODEL_ID
 
     processor = WhisperProcessor.from_pretrained(model_name)
     model = WhisperForConditionalGeneration.from_pretrained(model_name).to(device)
