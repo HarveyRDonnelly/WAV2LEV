@@ -4,6 +4,11 @@ WAV2LEV is a model for reference-free ASR quality estimation that predicts the u
 
 ![WAV2LEV architecture](img/wav2lev.png)
 
+
+**Paper:** [IEEE ICASSP 2026](https://ieeexplore.ieee.org/document/11462338/)
+
+**Data:** [Mini-CNoiSY Corpus](https://github.com/HarveyRDonnelly/MiniCNoiSY)
+
 ## Model Architecture
 
 WAV2LEV is a transformer decoder head built on top of **Whisper large-v3**. At each inference step it autoregressively predicts the next edit operation in the sequence `[<start>, op₁, op₂, …, <end>]`, where each opᵢ ∈ {ins, sub, del, match}.
