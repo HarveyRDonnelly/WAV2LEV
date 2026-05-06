@@ -2,6 +2,8 @@
 
 WAV2LEV is a model for reference-free ASR quality estimation that predicts the underlying sequence of Levenshtein edit operations (substitutions, deletions, insertions, matches) token-by-token, rather than estimating word error rate (WER) as a single scalar. WER is derived from the predicted edit sequence, yielding fine-grained, word-level error estimates that are more informative than those of direct WER estimators.
 
+![WAV2LEV architecture](img/wav2lev.png)
+
 ## Model Architecture
 
 WAV2LEV is a transformer decoder head built on top of **Whisper large-v3**. At each inference step it autoregressively predicts the next edit operation in the sequence `[<start>, op₁, op₂, …, <end>]`, where each opᵢ ∈ {ins, sub, del, match}.
@@ -13,8 +15,6 @@ The decoder receives three concatenated input streams as cross-attention memory:
 | Audio features | Whisper encoder | Frame-level hidden states (1280-dim) |
 | Uncertainty features | Whisper decoder logits | 13 per-token statistics (entropy, top-2 probs, margin, ratio, Gini impurity, cumulative top-3/5/10 mass, normalised exponential entropy, hypothesis token probability, NLL) |
 | Text embeddings | Whisper decoder embeddings | Token-level embeddings of the hypothesis transcript (1280-dim) |
-
-![WAV2LEV architecture](img/wav2lev.png)
 
 **Decoder configuration:** 12 blocks · 16 attention heads · 1024-dim · GELU activations · 10% dropout
 
